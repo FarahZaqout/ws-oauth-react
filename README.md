@@ -351,3 +351,341 @@ Now that we can view the user details. Mimick the behavior of a database.
 The `users.json` should hold only one user (your account) by the end of the challenge. No matter how many times you refresh your react app.
 
 Good luck.
+
+---
+
+## OAuth with GitHub
+
+Now that we've set up a Google login button, let's do the same with GitHub.
+
+## Setting Up an OAuth App:
+
+- From your GitHub profile, go to settings > developer settings.
+- Select OAuth Apps.
+- Fill the required fields
+  - App name
+  - Home Page URL: http://localhost:3000
+  - Authorization callback URI: http://localhost:3000
+
+## Obtaining Access to Github:
+
+The flow of Github OAuth is essentially the same as Google, but we need a couple of steps before we obtain the `access token`.
+
+- We request the user's github identity
+- Once the user provides their identity, Github does not send us the access token yet. It sends us a code that we use to obtain access token.
+- Once we have the access token, we can request access to the user account.
+
+## Obtaining the user's identity:
+
+In order to obtain the user's identity, we need to query the github login api, and request the appropriate scope and provide our client id.
+
+- Endpoint: `https://github.com/login/oauth/authorize`
+- Query Params: `client id`, `scope`, `redirect_uri`
+  - more params are listend [here](https://developer.github.com/apps/building-oauth-apps/authorizing-oauth-apps/). However, for the purpose of this workshop we will not be using them.
+
+Let's add the complete request url into our app.
+
+```jsx
+<a href="https://github.com/login/oauth/authorize?client_id=YOUR_CLIENT_ID&scope=user&redirect_uri=http://localhost:3000">
+	Login
+</a>
+```
+
+Our App.js should look like this by now:
+
+```jsx
+function App() {
+  const href = 'https://github.com/login/oauth/authorize?client_id=YOUR_CLIENT_ID&scope=user&redirect_uri=http://localhost:3000''
+  return (
+    <div className="App">
+        <header className="App-header">
+            <GoogleLogin
+                clientId="810485735795-ptmp0ff8p3sup1ujb2q5121kd0ri381k.apps.googleusercontent.com"
+                buttonText="Login"
+                onSuccess={successResponse}
+                onFailure={failureResponse}
+                cookiePolicy={'single_host_origin'}
+                isSignedIn={true}
+            />
+            <a href={ref}>Login</a>
+        </header>
+    </div>
+  );
+}
+```
+
+Clicking the link will obtain a code from github. The uri you have in your browser should look similar to this:
+`http://localhost:3000/?code=3f3e9f02f2f078ddd549`
+
+The code parameter is what we need to request an access token from Github. In order to do that, we need to send this token to our backend and query github from there.
+
+> We need to request the access token from our backend because github does not allow browser requests to obtain its access token. If you attempt an `axios` request it will return a CORS error.
+
+### Requesting Access Token:
+
+Now we need to automatically send the code to our server once we obtain it.
+
+- extract the token from the window location.
+- send it to the server in a `useEffect` hook
+
+```jsx
+// App.js
+const sendToken = async () => {
+	// extract the code.
+	const code = window.location.href.split('code=')[1];
+	// send the code to our server.
+	Axios.post(`/login/github`, { code }).then(console.log).catch(console.log);
+};
+
+function App() {
+	useEffect(() => {
+		sendToken();
+	});
+	return (
+		<div className="App">
+			<header className="App-header">
+				<GoogleLogin
+					clientId="810485735795-ptmp0ff8p3sup1ujb2q5121kd0ri381k.apps.googleusercontent.com"
+					buttonText="Login"
+					onSuccess={successResponse}
+					onFailure={failureResponse}
+					cookiePolicy={'single_host_origin'}
+					isSignedIn={true}
+				/>
+				<a href={ref}>Login</a>
+				<button onClick={onClick}></button>
+			</header>
+		</div>
+	);
+}
+```
+
+Now let's set up the `/login/github` endpoint on our server. First let's make sure the code reaches our server correctly.
+
+```js
+app.post('/login/github', async (req, res) => {
+try {
+    const { code } = req.body;
+    console.log(code)
+});
+```
+
+Now that we know the code is sent correctly, let's look at the endpoint to obtain the access token:
+
+- Endpoint: `https://github.com/login/oauth/access_token`
+- Method: `POST`
+- Required params: `client_id`, `client_secret`, `code`.
+
+So the final url will look like this:
+`https://github.com/login/oauth/access_token/?client_id=YOUR_CLIENT_ID&client_secret=YOUR_CLIENT_SECRET&code=CODE`
+
+Now to build our endpoint:
+
+- require the `querystring` core module
+
+```js
+app.post('/login/github', async (req, res) => {
+	try {
+		const { code } = req.body;
+		const queryParams = {
+			client_id: '1ddae189b5fe5cdb2ec0',
+			client_secret: '64799231e101e2dc87237781fbd21f5bef4e10df',
+			redirect_uri: 'http://localhost:4000',
+			code,
+		};
+		const query = querystring.stringify(queryParams);
+		const url = `https://github.com/login/oauth/access_token?${query}`;
+		const result = await axios({
+			method: 'POST',
+			url: url,
+			headers: {
+				accept: 'application/json',
+			},
+		});
+		const { access_token } = result.data;
+		console.log(access_token);
+	} catch (e) {
+		console.log(e);
+	}
+});
+```
+
+in the code above, we are using the `headers` to tell github we want the response to be a json object.
+
+If everything went correctly, you should have the access token value now. If it's undefined, then you have a typo somewhere.
+
+### Obtaining The User Data:
+
+Now that we have the access token, we no longer need the code. We can use the access token to query the user info.
+
+To get the user info, we call the `user` endpoint in github API.
+
+- Endpoint: https://api.github.com/user
+- Method: `GET`
+- Required headers: Authorization: `token ${access_token}`
+
+Let's finish up our endpoint. Add this bit to your controller and we should be good to go.
+
+```js
+const userInfo = await axios({
+	method: 'GET',
+	headers: {
+		Authorization: `token ${access_token}`,
+	},
+	url: 'https://api.github.com/user',
+});
+console.log(userInfo.data);
+```
+
+Our controller in `src/index.js` should look like this now:
+
+```js
+app.post('/login/github', async (req, res) => {
+	try {
+		const { code } = req.body;
+		const queryParams = {
+			client_id: '1ddae189b5fe5cdb2ec0',
+			client_secret: '64799231e101e2dc87237781fbd21f5bef4e10df',
+			redirect_uri: 'http://localhost:4000',
+			code,
+		};
+		const query = querystring.stringify(queryParams);
+		const url = `https://github.com/login/oauth/access_token?${query}`;
+		const result = await axios({
+			method: 'POST',
+			url: url,
+			headers: {
+				accept: 'application/json',
+			},
+		});
+
+		const { access_token } = result.data;
+		const userInfo = await axios({
+			method: 'GET',
+			headers: {
+				Authorization: `token ${access_token}`,
+			},
+			url: 'https://api.github.com/user',
+		});
+		console.log(userInfo.data);
+	} catch (e) {
+		console.log(e);
+	}
+});
+```
+
+Now you should be able to view your user profile info.
+
+## Final Result:
+
+**Node**
+
+```js
+// src/index.js
+const express = require('express');
+const bodyParser = require('body-parser');
+const axios = require('axios');
+const querystring = require('querystring');
+
+const app = express();
+
+// MIDDLEWARE
+app.use(bodyParser.json({ extended: false }));
+
+// ROUTES
+app.post('/login/google', async (req, res) => {
+	const { tokenId } = req.body;
+	// request user details:
+	const idInfo = await axios.get(
+		`https://oauth2.googleapis.com/tokeninfo?id_token=${tokenId}`
+	);
+});
+
+app.post('/login/github', async (req, res) => {
+	try {
+		const { code } = req.body;
+		const queryParams = {
+			client_id: '1ddae189b5fe5cdb2ec0',
+			client_secret: '64799231e101e2dc87237781fbd21f5bef4e10df',
+			redirect_uri: 'http://localhost:4000',
+			code,
+		};
+		const query = querystring.stringify(queryParams);
+		const url = `https://github.com/login/oauth/access_token?${query}`;
+		const result = await axios({
+			method: 'POST',
+			url: url,
+			headers: {
+				accept: 'application/json',
+			},
+		});
+
+		const { access_token } = result.data;
+		const userInfo = await axios({
+			method: 'GET',
+			headers: {
+				Authorization: `token ${access_token}`,
+			},
+			url: 'https://api.github.com/user',
+		});
+		console.log(userInfo.data);
+	} catch (e) {
+		console.log(e);
+	}
+});
+
+app.listen(4000, () => {
+	console.log('server is listening on port 4000');
+});
+```
+
+**React**
+
+```js
+// src/App.js
+import React, { useEffect } from 'react';
+import logo from './logo.svg';
+import './App.css';
+import { GoogleLogin } from 'react-google-login';
+import Axios from 'axios';
+
+const successResponse = (response) => {
+	const { tokenId } = response;
+	Axios.post('/login/google', { tokenId }).then(console.log).catch(console.log);
+};
+
+const ref =
+	'https://github.com/login/oauth/authorize?client_id=1ddae189b5fe5cdb2ec0&scope=user&redirect_uri=http://localhost:3000';
+
+const failureResponse = (response) => {
+	console.log('error', response);
+};
+
+const sendToken = async () => {
+	const code = window.location.href.split('code=')[1];
+	Axios.post(`/login/github`, { code }).then(console.log).catch(console.log);
+};
+
+function App() {
+	useEffect(() => {
+		sendToken();
+	});
+	return (
+		<div className="App">
+			<header className="App-header">
+				<GoogleLogin
+					clientId="810485735795-ptmp0ff8p3sup1ujb2q5121kd0ri381k.apps.googleusercontent.com"
+					buttonText="Login"
+					onSuccess={successResponse}
+					onFailure={failureResponse}
+					cookiePolicy={'single_host_origin'}
+					isSignedIn={true}
+				/>
+				<a href={ref}>Login</a>
+			</header>
+		</div>
+	);
+}
+
+export default App;
+```
